@@ -1,0 +1,6 @@
+var BACKGROUND="background.webp"
+var PICTURE="picture.webp"
+var OUTDIR="outdir"
+
+range x 10 1500 50
+range y 800 1140 60
