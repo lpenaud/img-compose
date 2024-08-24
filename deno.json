@@ -1,0 +1,6 @@
+{
+  "imports": {},
+  "tasks": {
+    "start": "deno run --allow-read --allow-run=magick src/main.ts"
+  }
+}
