@@ -1,39 +1,12 @@
-import { range, type RangeOptions } from "./utils.ts";
+import * as image from "./image.ts";
+import { infinityRange, range, type RangeOptions, throwIfNaInt } from "./utils.ts";
 
 export interface Command {
-  run(args: string): void;
+  run(args: string[]): void;
 }
 
-const VAR_RE = /^([A-Za-z]\w*)\="(.+)"\s*$/;
-const RANGE_RE = /\s+/;
-
-interface SplitArgsOptions {
-  length: number;
-}
-
-function splitArgs(args: string, length: number): string[] {
-  const result = args.split(RANGE_RE, length);
-  if (result.length < length) {
-    throw new Error(`Expected ${length} args`);
-  }
-  return result;
-}
-
-class VarCommand implements Command {
-  #factory: ContextFactory;
-
-  constructor(factory: ContextFactory) {
-    this.#factory = factory;
-  }
-
-  run(args: string): void {
-    const match = VAR_RE.exec(args);
-    if (match === null) {
-      return;
-    }
-    const [, name, value] = match;
-    this.#factory.setVar(name, value);
-  }
+interface ContextRangeOptions extends RangeOptions {
+  axis: string;
 }
 
 class RangeCommand implements Command {
@@ -43,23 +16,19 @@ class RangeCommand implements Command {
     this.#factory = factory;
   }
 
-  run(args: string): void {
-    const [axis, start, end, step] = this.#split(args);
-    this.#factory.setRange(axis, {
-      start: parseInt(start),
-      end: parseInt(end),
-      step: parseInt(step),
-    });
-  }
-
-  #split(args: string) {
-    try {
-      return splitArgs(args, 4);
-    } catch (error) {
-      throw new Error("RangeCommandError", {
-        cause: error,
-      });
+  run(args: string[]): void {
+    if (args.length !== 4) {
+      throw new Error("Expected 4 args to the range command");
     }
+    const [axis] = args;
+    const [start, end, step] = args.slice(1)
+      .map((a) => throwIfNaInt(a));
+    this.#factory.setRange({
+      axis,
+      start,
+      end,
+      step,
+    });
   }
 }
 
@@ -70,51 +39,72 @@ class ImgCommand implements Command {
     this.#factory = factory;
   }
 
-  run(args: string): void {
-    const match = RANGE_RE.exec(args);
-    if (match === null) {
-      return;
+  run(args: string[]): void {
+    if (args.length < 2) {
+      throw new Error("Expected at least 2 args to the img command");
     }
-    const [, name, pathname] = match;
-    this.#factory.setImg(name, pathname);
+    const [name] = args;
+    this.#factory.setImg(name, args.slice(1).join(""));
+  }
+}
+
+class MiffCommand implements Command {
+  #factory: ContextFactory;
+
+  constructor(factory: ContextFactory) {
+    this.#factory = factory;
+  }
+
+  run(args: string[]): void {
+    this.#factory.miff = args.join("");
   }
 }
 
 interface ContextOptions {
-  vars: Map<string, string>;
-  rangeX: RangeOptions;
-  rangeY: RangeOptions;
+  imgs: Map<string, image.MagickImage>;
+  ranges: ContextRangeOptions[];
+  current: image.MagickImage | null;
+}
+
+interface AxisRange {
+  axis: string;
+  gen: Generator<number, void, unknown>;
+  options: RangeOptions;
 }
 
 export class Context {
-  #vars: Map<string, string>;
+  #imgs: Map<string, image.MagickImage>;
 
-  #rangeX: RangeOptions;
+  #ranges: ContextRangeOptions[];
 
-  #rangeY: RangeOptions;
+  #current: image.MagickImage | null;
 
-  get vars(): IterableIterator<[string, string]> {
-    return this.#vars.entries();
+  constructor({ imgs, ranges, current }: ContextOptions) {
+    this.#imgs = imgs;
+    this.#ranges = ranges;
+    this.#current = current;
   }
 
-  constructor({ vars, rangeX, rangeY }: ContextOptions) {
-    this.#vars = vars;
-    this.#rangeX = rangeX;
-    this.#rangeY = rangeY;
-  }
-
-  getVar(name: string): string {
-    const value = this.#vars.get(name);
-    if (value === undefined) {
-      throw new Error(`${name} is not defined`);
+  getImg(name: string): image.MagickImage {
+    const img = this.#imgs.get(name);
+    if (img === undefined) {
+      throw new Error(`Unknown img: '${name}'`);
     }
-    return value;
+    return img;
   }
 
-  *[Symbol.iterator]() {
-    for (const y of range(this.#rangeY)) {
-      for (const x of range(this.#rangeX)) {
-        yield [x, y];
+  async *[Symbol.asyncIterator]() {
+    yield* this.#axis();
+  }
+
+  *#axis() {
+    const [rangeX,rangeY] = this.#ranges;
+    for (const x of range(rangeX)) {
+      for (const y of range(rangeY)) {
+        yield {
+          [rangeX.axis]: x,
+          [rangeY.axis]: y,
+        };
       }
     }
   }
@@ -123,30 +113,29 @@ export class Context {
 export class ContextFactory {
   #imgs: Map<string, string>;
 
-  #vars: Map<string, string>;
-
-  #ranges: Map<string, RangeOptions>;
+  #ranges: Map<string, ContextRangeOptions>;
 
   #commands: Record<string, Command>;
 
+  #miff: string | null;
+
+  set miff(value: string | null) {
+    this.#miff = value ? value : null;
+  }
+
   constructor() {
     this.#imgs = new Map();
-    this.#vars = new Map();
     this.#ranges = new Map();
     this.#commands = {
-      var: new VarCommand(this),
       range: new RangeCommand(this),
       img: new ImgCommand(this),
+      miff: new MiffCommand(this),
     };
+    this.#miff = null;
   }
 
-  setVar(name: string, value: string): this {
-    this.#vars.set(name, value);
-    return this;
-  }
-
-  setRange(axis: string, value: RangeOptions): this {
-    this.#ranges.set(axis, value);
+  setRange(range: ContextRangeOptions): this {
+    this.#ranges.set(range.axis, range);
     return this;
   }
 
@@ -155,21 +144,25 @@ export class ContextFactory {
     return this;
   }
 
-  run(command: string, args: string): void {
+  run(args: string[]): void {
+    const [command] = args;
     const c = this.#commands[command];
     if (c === undefined) {
-      console.warn("Invalid command:", command, args);
+      //throw new Error(`Invalid command: ${command}`);
       return;
     }
-    console.log(command, args);
-    c.run(args);
+    c.run(args.slice(1));
   }
 
   build(): Context {
+    const imgs: Map<string, image.MagickImage> = new Map();
+    for (const [name, pathname] of this.#imgs) {
+      imgs.set(name, image.fromFile(pathname));
+    }
     return new Context({
-      vars: new Map(this.#vars),
-      rangeX: this.#ranges.get("x") as RangeOptions,
-      rangeY: this.#ranges.get("y") as RangeOptions,
+      imgs,
+      ranges: Array.from(this.#ranges.values()),
+      current: this.#miff !== null ? image.fromFile(this.#miff) : null,
     });
   }
 }

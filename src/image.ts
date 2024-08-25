@@ -1,9 +1,4 @@
-export interface MagickImage {
-  name: string;
-  content: Uint8Array;
-}
-
-class MagickImageDefault implements MagickImage {
+export class MagickImage {
   #name: string;
 
   #content: Uint8Array;
@@ -23,12 +18,12 @@ class MagickImageDefault implements MagickImage {
 }
 
 export function fromFile(pathname: string): MagickImage {
-  return new MagickImageDefault(pathname, new Uint8Array(0));
+  return new MagickImage(pathname, new Uint8Array(0));
 }
 
 export function fromBuffer(
   type: string,
   buffer: Uint8Array,
-): MagickImageDefault {
-  return new MagickImageDefault(`${type}:-`, buffer);
+): MagickImage {
+  return new MagickImage(`${type}:-`, buffer);
 }

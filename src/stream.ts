@@ -1,20 +1,3 @@
-const RE_LINE = /^([a-z]+)\s*(.*)$/gm;
-
-export class TransformScriptStream
-  extends TransformStream<string, [string, string]> {
-  constructor() {
-    super({
-      transform(chunk, controller) {
-        let match: RegExpExecArray | null;
-        while ((match = RE_LINE.exec(chunk)) !== null) {
-          const [, command, args] = match;
-          controller.enqueue([command, args]);
-        }
-      },
-    });
-  }
-}
-
 export async function* readByob(
   readable: ReadableStream<Uint8Array>,
   byteLength: number = 2E6,
