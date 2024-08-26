@@ -94,18 +94,18 @@ export class Context {
   }
 
   async *[Symbol.asyncIterator]() {
-    yield* this.#axis();
+    yield* this.#axis({}, this.#ranges);
   }
 
-  *#axis() {
-    const [rangeX,rangeY] = this.#ranges;
-    for (const x of range(rangeX)) {
-      for (const y of range(rangeY)) {
-        yield {
-          [rangeX.axis]: x,
-          [rangeY.axis]: y,
-        };
-      }
+  *#axis(current: Record<string, number>, ranges: ContextRangeOptions[]) {
+    const [root] = ranges;
+    if (root === undefined) {
+      yield { ...current };
+      return;
+    }
+    for (const value of range(root)) {
+      current[root.axis] = value;
+      yield* this.#axis(current, ranges.slice(1));
     }
   }
 }
