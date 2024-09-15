@@ -9,23 +9,20 @@ async function main([infile]: string[]): Promise<number> {
     ? script.fromReadable(Deno.stdin.readable)
     : script.fromFile(infile)
   );
-  for await (const axis of context) {
-    console.log(axis) 
+  for (const [x, y] of context) {
+    background = await magick.composite({
+      heigth: 60,
+      width: 60,
+      x,
+      y,
+      imgs: [picture, background],
+      outputType: "miff",
+    });
   }
-  // for (const [x, y] of context) {
-  //   background = await magick.composite({
-  //     heigth: 60,
-  //     width: 60,
-  //     x,
-  //     y,
-  //     imgs: [picture, background],
-  //     outputType: "miff",
-  //   });
-  // }
-  // await magick.convert({
-  //   infile: background,
-  //   outfile: image.fromFile("output.png"),
-  // });
+  await magick.convert({
+    infile: background,
+    outfile: image.fromFile("output.png"),
+  });
   return 0;
 }
 

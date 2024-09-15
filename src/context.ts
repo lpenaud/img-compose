@@ -1,29 +1,31 @@
 import * as image from "./image.ts";
-import { infinityRange, range, type RangeOptions, throwIfNaInt } from "./utils.ts";
+import {
+  range,
+  type RangeOptions,
+  throwIfNaInt,
+} from "./utils.ts";
+
+export interface FactoryCommand {
+  init(factory: ContextFactory, args: string[]): void;
+}
 
 export interface Command {
-  run(args: string[]): void;
+  run(ctx: Context): void;
 }
 
 interface ContextRangeOptions extends RangeOptions {
   axis: string;
 }
 
-class RangeCommand implements Command {
-  #factory: ContextFactory;
-
-  constructor(factory: ContextFactory) {
-    this.#factory = factory;
-  }
-
-  run(args: string[]): void {
+class RangeCommand implements FactoryCommand {
+  init(factory: ContextFactory, args: string[]): void {
     if (args.length !== 4) {
       throw new Error("Expected 4 args to the range command");
     }
     const [axis] = args;
     const [start, end, step] = args.slice(1)
       .map((a) => throwIfNaInt(a));
-    this.#factory.setRange({
+    factory.setRange({
       axis,
       start,
       end,
@@ -32,57 +34,114 @@ class RangeCommand implements Command {
   }
 }
 
-class ImgCommand implements Command {
-  #factory: ContextFactory;
-
-  constructor(factory: ContextFactory) {
-    this.#factory = factory;
-  }
-
-  run(args: string[]): void {
+class ImgCommand implements FactoryCommand {
+  init(factory: ContextFactory, args: string[]): void {
     if (args.length < 2) {
       throw new Error("Expected at least 2 args to the img command");
     }
     const [name] = args;
-    this.#factory.setImg(name, args.slice(1).join(""));
+    factory.setImg(name, args.slice(1).join(""));
   }
 }
 
 class MiffCommand implements Command {
-  #factory: ContextFactory;
 
-  constructor(factory: ContextFactory) {
-    this.#factory = factory;
+  #name: string;
+
+  constructor (name: string) {
+    this.#name = name;
   }
 
-  run(args: string[]): void {
-    this.#factory.miff = args.join("");
+  run(ctx: Context): void {
+    ctx.current = image.fromFile(this.#name);
+  }
+  
+}
+
+class MiffFactoryCommand implements FactoryCommand {
+
+  init(factory: ContextFactory, args: string[]): void {
+    const [name] = args;
+    if (name === undefined) {
+      throw new Error("Expected one arg to the miff command");
+    }
+    factory.pushCommand(new MiffCommand(name));
   }
 }
 
 interface ContextOptions {
   imgs: Map<string, image.MagickImage>;
-  ranges: ContextRangeOptions[];
-  current: image.MagickImage | null;
+  ranges: ContextRanges;
 }
 
-interface AxisRange {
+interface ContextRangeValueOptions {
   axis: string;
-  gen: Generator<number, void, unknown>;
   options: RangeOptions;
+  gen: Generator<number, void, unknown>;
+  current: IteratorResult<number, void>;
+}
+
+class ContextRanges {
+  #values: ContextRangeValueOptions[];
+
+  constructor(...ranges: ContextRangeOptions[]) {
+    this.#values = ranges.map((r) => {
+      const options = Object.freeze({
+        end: r.end,
+        start: r.start,
+        step: r.step,
+      });
+      const gen = range(options);
+      return {
+        axis: r.axis,
+        gen,
+        options,
+        current: gen.next(),
+      };
+    });
+  }
+
+  *[Symbol.iterator](): Iterator<Map<string, number>, void> {
+    const [root] = this.#values;
+    if (root.current.done) {
+      return;
+    }
+    let i: number;
+    for (i = this.#values.length - 1; i > 0; i--) {
+      const current = this.#values[i];
+      current.current = current.gen.next();
+      if (current.current.done) {
+        current.gen = range(current.options);
+        current.current = current.gen.next();
+        continue;
+      }
+      break;
+    }
+    if (i === 0) {
+      root.current = root.gen.next();
+      if (root.current.done) {
+        return;
+      }
+    }
+    yield this.#values.reduce((m, r) => m.set(r.axis, r.current.value as number), new Map<string, number>());
+  }
 }
 
 export class Context {
   #imgs: Map<string, image.MagickImage>;
 
-  #ranges: ContextRangeOptions[];
+  #ranges: Iterator<Map<string, number>, void>;
 
-  #current: image.MagickImage | null;
+  current: image.MagickImage | null;
 
-  constructor({ imgs, ranges, current }: ContextOptions) {
+  get range(): IteratorResult<Map<string, number>, void> {
+    return this.#ranges.next();
+  }
+
+  constructor({ imgs, ranges }: ContextOptions) {
     this.#imgs = imgs;
-    this.#ranges = ranges;
-    this.#current = current;
+    this.#ranges = ranges[Symbol.iterator]();
+    this.current = null;
   }
 
   getImg(name: string): image.MagickImage {
@@ -92,22 +151,6 @@ export class Context {
     }
     return img;
   }
-
-  async *[Symbol.asyncIterator]() {
-    yield* this.#axis({}, this.#ranges);
-  }
-
-  *#axis(current: Record<string, number>, ranges: ContextRangeOptions[]) {
-    const [root] = ranges;
-    if (root === undefined) {
-      yield { ...current };
-      return;
-    }
-    for (const value of range(root)) {
-      current[root.axis] = value;
-      yield* this.#axis(current, ranges.slice(1));
-    }
-  }
 }
 
 export class ContextFactory {
@@ -115,7 +158,9 @@ export class ContextFactory {
 
   #ranges: Map<string, ContextRangeOptions>;
 
-  #commands: Record<string, Command>;
+  #commands: Record<string, FactoryCommand>;
+
+  #contextCommand: Command[];
 
   #miff: string | null;
 
@@ -127,11 +172,12 @@ export class ContextFactory {
     this.#imgs = new Map();
     this.#ranges = new Map();
     this.#commands = {
-      range: new RangeCommand(this),
-      img: new ImgCommand(this),
-      miff: new MiffCommand(this),
+      range: new RangeCommand(),
+      img: new ImgCommand(),
+      miff: new MiffFactoryCommand(),
     };
     this.#miff = null;
+    this.#contextCommand = [];
   }
 
   setRange(range: ContextRangeOptions): this {
@@ -144,6 +190,10 @@ export class ContextFactory {
     return this;
   }
 
+  pushCommand(c: Command) {
+    this.#contextCommand.push(c);
+  }
+
   run(args: string[]): void {
     const [command] = args;
     const c = this.#commands[command];
@@ -151,7 +201,7 @@ export class ContextFactory {
       //throw new Error(`Invalid command: ${command}`);
       return;
     }
-    c.run(args.slice(1));
+    c.init(this, args.slice(1));
   }
 
   build(): Context {
@@ -161,8 +211,7 @@ export class ContextFactory {
     }
     return new Context({
       imgs,
-      ranges: Array.from(this.#ranges.values()),
-      current: this.#miff !== null ? image.fromFile(this.#miff) : null,
+      ranges: new ContextRanges(...this.#ranges.values()),
     });
   }
 }
